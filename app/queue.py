@@ -1,21 +1,16 @@
 import logging
-from uuid import UUID, uuid4
 
 import pika
 from pika.adapters.blocking_connection import BlockingChannel
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from app.catalog import Catalog
 from app.infrastructure import connect_rabbitmq
-from app.supplier import SupplierClient, SupplierError
+from app.jobs import Jobs, SyncJob
+from app.supplier import SupplierClient, SupplierError, SupplierTimeout
 
 QUEUE = "catalog.sync"
 FAILED_QUEUE = "catalog.sync.failed"
 logger = logging.getLogger(__name__)
-
-
-class SyncJob(BaseModel):
-    task_id: UUID
 
 
 def declare_queues(channel: BlockingChannel) -> None:
@@ -30,8 +25,7 @@ def declare_queues(channel: BlockingChannel) -> None:
     )
 
 
-def enqueue_sync(url: str) -> SyncJob:
-    job = SyncJob(task_id=uuid4())
+def publish_sync(url: str, job: SyncJob) -> None:
     with connect_rabbitmq(url) as connection:
         channel = connection.channel()
         declare_queues(channel)
@@ -41,25 +35,51 @@ def enqueue_sync(url: str) -> SyncJob:
             routing_key=QUEUE,
             body=job.model_dump_json().encode(),
             properties=pika.BasicProperties(
-                content_type="application/json", delivery_mode=2, type="catalog.sync"
+                content_type="application/json",
+                delivery_mode=2,
+                message_id=str(job.task_id),
+                type="catalog.sync",
             ),
             mandatory=True,
         )
-    return job
 
 
-def consume_sync(url: str, catalog: Catalog, supplier: SupplierClient) -> None:
+def consume_sync(url: str, jobs: Jobs, supplier: SupplierClient) -> None:
     with connect_rabbitmq(url) as connection:
         channel = connection.channel()
         declare_queues(channel)
         channel.basic_qos(prefetch_count=1)
-        for delivery, _, body in channel.consume(QUEUE):
+        for delivery, properties, body in channel.consume(QUEUE):
+            tag = delivery.delivery_tag
             try:
                 job = SyncJob.model_validate_json(body)
-                catalog.upsert(supplier.fetch_products())
-            except (SupplierError, ValidationError) as exc:
-                logger.warning("Sync job rejected: %s", type(exc).__name__)
-                channel.basic_nack(delivery.delivery_tag, requeue=False)
+            except ValidationError:
+                logger.warning("Invalid sync job payload")
+                channel.basic_nack(tag, requeue=False)
+                continue
+
+            status = jobs.start(job.task_id, legacy=properties.message_id is None)
+            if status == "succeeded":
+                channel.basic_ack(tag)
+                continue
+            if status != "running":
+                channel.basic_nack(tag, requeue=False)
+                continue
+
+            try:
+                products = supplier.fetch_products()
+            except SupplierError as exc:
+                error = (
+                    "supplier_timeout"
+                    if isinstance(exc, SupplierTimeout)
+                    else "supplier_error"
+                )
+                if jobs.fail(job.task_id, error):
+                    channel.basic_nack(tag, requeue=False)
+                    logger.warning("Sync job failed: %s (%s)", job.task_id, error)
+                else:
+                    channel.basic_ack(tag)
             else:
-                channel.basic_ack(delivery.delivery_tag)
-                logger.info("Sync job completed: %s", job.task_id)
+                if jobs.succeed(job.task_id, products):
+                    logger.info("Sync job completed: %s", job.task_id)
+                channel.basic_ack(tag)

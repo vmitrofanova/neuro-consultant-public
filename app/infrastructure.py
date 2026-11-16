@@ -23,10 +23,12 @@ class DependencyUnavailable(Exception):
 TIMEOUT = 3
 
 
+def connect_redis(url: str) -> Redis:
+    return Redis.from_url(url, socket_connect_timeout=TIMEOUT, socket_timeout=TIMEOUT)
+
+
 def check_redis(url: str) -> None:
-    with Redis.from_url(
-        url, socket_connect_timeout=TIMEOUT, socket_timeout=TIMEOUT
-    ) as client:
+    with connect_redis(url) as client:
         if not client.ping():
             raise DependencyUnavailable
 

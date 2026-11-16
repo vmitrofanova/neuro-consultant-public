@@ -1,0 +1,44 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      COMPOSE_PROJECT_NAME: catalog-ci
+      SYNC_JOB_RATE_LIMIT: 3
+      SYNC_JOB_RATE_WINDOW_SECONDS: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/uv-tools"
+          "$RUNNER_TEMP/uv-tools/bin/python" -m pip install uv==0.8.23
+          printf '%s\n' "$RUNNER_TEMP/uv-tools/bin" >> "$GITHUB_PATH"
+      - name: Lint and run unit tests
+        run: |
+          uv sync --locked
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+          uv run --locked pytest -q
+      - name: Start Compose stack
+        run: docker compose up --build -d
+      - name: Test API, worker, database and rate limiter
+        run: uv run --locked python tests/e2e_catalog.py
+      - name: Collect service logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+      - name: Stop Compose stack
+        if: always()
+        run: docker compose down --volumes
