@@ -1,0 +1,130 @@
+services:
+  backend:
+    image: catalog-sync-demo:local
+    build: .
+    environment:
+      SUPPLIER_URL: http://supplier:8001
+      SUPPLIER_TOKEN: local-demo
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://demo:local-demo@rabbitmq:5672/%2F
+      MONGO_URI: mongodb://mongodb:27017
+      POSTGRES_DSN: postgresql://demo:local-demo@postgres:5432/demo
+      WEAVIATE_HOST: weaviate
+      LLM_HEALTH_URL: http://llm:8080/health
+    ports:
+      - "127.0.0.1:${DEMO_API_PORT:-8000}:8000"
+    depends_on:
+      supplier:
+        condition: service_started
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      weaviate:
+        condition: service_started
+      llm:
+        condition: service_started
+
+  worker:
+    image: catalog-sync-demo:local
+    pull_policy: never
+    command: python -m app.worker
+    restart: on-failure
+    environment:
+      SUPPLIER_URL: http://supplier:8001
+      SUPPLIER_TOKEN: local-demo
+      RABBITMQ_URL: amqp://demo:local-demo@rabbitmq:5672/%2F
+      POSTGRES_DSN: postgresql://demo:local-demo@postgres:5432/demo
+    depends_on:
+      supplier:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  supplier:
+    image: catalog-sync-demo:local
+    pull_policy: never
+    command: uvicorn app.demo_supplier:app --host 0.0.0.0 --port 8001
+    environment:
+      SUPPLIER_TOKEN: local-demo
+
+  redis:
+    image: redis:7-alpine
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: demo
+      RABBITMQ_DEFAULT_PASS: local-demo
+    volumes:
+      - ./ops/rabbitmq-plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mongodb:
+    image: mongo:7.0
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: local-demo
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "demo", "-d", "demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 12
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.30.2
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      DEFAULT_VECTORIZER_MODULE: none
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      CLUSTER_HOSTNAME: demo
+
+  llm:
+    image: catalog-sync-demo:local
+    pull_policy: never
+    command: uvicorn app.demo_llm:app --host 0.0.0.0 --port 8080
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./ops/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:${DEMO_PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./ops/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:${DEMO_GRAFANA_PORT:-3000}:3000"
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.40
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017
+
+volumes:
+  postgres-data:
