@@ -33,7 +33,9 @@ jobs:
           uv run --locked ruff format --check .
           uv run --locked pytest -q
       - name: Start Compose stack
-        run: docker compose up --build -d
+        run: |
+          cp .env.example .env
+          docker compose up --build -d
       - name: Test API, worker, database and rate limiter
         run: uv run --locked python tests/e2e_catalog.py
       - name: Collect service logs on failure

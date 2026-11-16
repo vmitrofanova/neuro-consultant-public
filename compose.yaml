@@ -4,7 +4,7 @@ services:
     build: .
     environment:
       SUPPLIER_URL: http://supplier:8001
-      SUPPLIER_TOKEN: local-demo
+      SUPPLIER_TOKEN: ${SUPPLIER_TOKEN:-local-demo}
       REDIS_URL: redis://redis:6379/0
       SYNC_JOB_RATE_LIMIT: ${SYNC_JOB_RATE_LIMIT:-5}
       SYNC_JOB_RATE_WINDOW_SECONDS: ${SYNC_JOB_RATE_WINDOW_SECONDS:-60}
@@ -38,7 +38,7 @@ services:
     restart: on-failure
     environment:
       SUPPLIER_URL: http://supplier:8001
-      SUPPLIER_TOKEN: local-demo
+      SUPPLIER_TOKEN: ${SUPPLIER_TOKEN:-local-demo}
       RABBITMQ_URL: amqp://demo:local-demo@rabbitmq:5672/%2F
       POSTGRES_DSN: postgresql://demo:local-demo@postgres:5432/demo
     depends_on:
@@ -54,7 +54,7 @@ services:
     pull_policy: never
     command: uvicorn app.demo_supplier:app --host 0.0.0.0 --port 8001
     environment:
-      SUPPLIER_TOKEN: local-demo
+      SUPPLIER_TOKEN: ${SUPPLIER_TOKEN:-local-demo}
 
   redis:
     image: redis:7-alpine

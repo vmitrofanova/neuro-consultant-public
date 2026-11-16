@@ -2,6 +2,22 @@
 
 Backend на FastAPI для импорта каталога товаров из API поставщика. Демо-поставщик поднимается отдельным процессом и отдаёт два вымышленных товара. Backend обращается к нему по HTTP, проверяет ответ и сохраняет товары. В профиле Compose используется PostgreSQL, а задания можно отправлять в RabbitMQ отдельному воркеру.
 
+## Запуск с Docker Compose
+
+Для полного демо нужен запущенный Docker с Compose v2. При первом запуске выполните эти команды из корня репозитория.
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+curl -fsS --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/ready
+```
+
+Дождитесь `"ready": true`. Откройте Swagger UI, выполните `POST /sync/jobs` и проверьте результат по `task_id` через `GET /sync/jobs/{task_id}`. [Swagger UI](http://127.0.0.1:8000/docs).
+
+Шаблон уже содержит тестовый токен, порты и настройки лимита. Адреса внутренних сервисов задаёт Compose, поэтому для локального демо достаточно скопировать шаблон. Если порт занят, измените соответствующее значение в `.env` и используйте новый порт в URL. Файл `.env` исключён из Git. [Шаблон окружения](.env.example) · [Prometheus](http://127.0.0.1:9090/targets) · [Grafana](http://127.0.0.1:3000).
+
+Остановить стек можно командой `docker compose down`. Данные PostgreSQL сохранятся в томе.
+
 ## Архитектура
 
 ```mermaid
@@ -20,15 +36,6 @@ flowchart LR
 ```
 
 Воркер записывает товары и статус `succeeded` в одной транзакции PostgreSQL, затем подтверждает сообщение RabbitMQ. `GET /ready` проверяет все настроенные зависимости. Prometheus собирает метрики backend, RabbitMQ и экспортёров Redis и MongoDB. [Контракты инфраструктуры](docs/infrastructure.md).
-
-## Стек Docker Compose
-
-```bash
-docker compose up --build -d
-curl -fsS --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/ready
-```
-
-Порты на хосте можно задать через `DEMO_API_PORT`, `DEMO_PROMETHEUS_PORT` и `DEMO_GRAFANA_PORT`. [Swagger UI](http://127.0.0.1:8000/docs) · [Prometheus](http://127.0.0.1:9090/targets) · [Grafana](http://127.0.0.1:3000).
 
 ## Демо на собеседовании за 3–5 минут
 
@@ -54,20 +61,23 @@ curl -fsS --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/r
 
 ## Быстрый запуск с SQLite
 
-Понадобятся Python 3.11+ и `uv`. Выполните команды из корня репозитория.
+Понадобятся Python 3.11+ и `uv`. Этот режим запускает HTTP-поставщика и синхронный импорт в SQLite. Для фоновых заданий и лимита Redis используйте Docker Compose.
+
+Выполните команды из корня репозитория. Если `.env` уже создан, пропустите копирование.
 
 ```bash
+cp .env.example .env
 uv sync --locked
 ```
 
 Запустите поставщика и backend в двух терминалах. В примере поставщик проверяет тестовый bearer-токен, который backend отправляет в HTTP-заголовке.
 
 ```bash
-SUPPLIER_TOKEN=local-demo uv run --locked uvicorn app.demo_supplier:app --port 8001
+uv run --locked --env-file .env uvicorn app.demo_supplier:app --port 8001
 ```
 
 ```bash
-SUPPLIER_TOKEN=local-demo uv run --locked uvicorn app.main:create_app --factory --port 8000
+uv run --locked --env-file .env uvicorn app.main:create_app --factory --port 8000
 ```
 
 Откройте [Swagger UI](http://127.0.0.1:8000/docs) или выполните запросы в терминале.
@@ -90,7 +100,7 @@ curl -fsS http://127.0.0.1:8000/products
 | Переменная | Назначение | Значение по умолчанию |
 | --- | --- | --- |
 | `SUPPLIER_URL` | Базовый URL API поставщика | `http://127.0.0.1:8001` |
-| `SUPPLIER_TOKEN` | Bearer-токен для запроса к поставщику | Пусто |
+| `SUPPLIER_TOKEN` | Bearer-токен для запроса к поставщику | `local-demo` в шаблоне и Compose |
 | `DATABASE_PATH` | Путь к SQLite | `data/catalog.sqlite3` |
 | `POSTGRES_DSN` | DSN для каталога и статусов заданий в PostgreSQL | Пусто |
 | `REDIS_URL` | Подключение к Redis для лимита запросов | Пусто, в Compose задан |
