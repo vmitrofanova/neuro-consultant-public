@@ -2,21 +2,59 @@
 
 Backend на FastAPI для импорта каталога товаров из API поставщика. Демо-поставщик поднимается отдельным процессом и отдаёт два вымышленных товара. Backend обращается к нему по HTTP, проверяет ответ и сохраняет товары. В профиле Compose используется PostgreSQL, а задания можно отправлять в RabbitMQ отдельному воркеру.
 
+## Архитектура
+
+```mermaid
+flowchart LR
+    Client["Клиент / Swagger UI"] -->|"HTTP"| API["FastAPI"]
+    API -->|"публикация AMQP"| Queue["RabbitMQ"]
+    Queue -->|"доставка задания"| Worker["Воркер"]
+    Worker -->|"GET /v1/products с bearer-токеном"| Supplier["Демо-поставщик"]
+    Worker -->|"upsert по SKU"| DB[("PostgreSQL")]
+    API -->|"прямой импорт"| Supplier
+    API -->|"чтение и upsert"| DB
+    API -.->|"проверки подключения для /ready"| Dependencies["Redis, MongoDB, Weaviate, демо-LLM"]
+    Prometheus["Prometheus"] -.->|"/metrics"| API
+    Grafana["Grafana"] -.->|"запросы метрик"| Prometheus
+```
+
+Воркер подтверждает сообщение RabbitMQ после записи товаров в PostgreSQL. `GET /ready` также проверяет подключения к RabbitMQ и PostgreSQL. Prometheus собирает метрики backend, RabbitMQ и экспортёров Redis и MongoDB. [Контракты инфраструктуры](docs/infrastructure.md).
+
 ## Стек Docker Compose
 
 ```bash
 docker compose up --build -d
-curl -fsS http://127.0.0.1:8000/ready
-curl -fsS -X POST http://127.0.0.1:8000/sync/jobs
-docker compose logs --tail 20 worker
-curl -fsS http://127.0.0.1:8000/products
+curl -fsS --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/ready
 ```
 
-`/ready` вернёт `200`, когда Redis, RabbitMQ, MongoDB, PostgreSQL, Weaviate и демо-LLM готовы. После публикации задания API возвращает `202` с `task_id`. Воркер записывает товары в PostgreSQL и подтверждает сообщение. Запрос списка товаров покажет их после завершения задания.
+Порты на хосте можно задать через `DEMO_API_PORT`, `DEMO_PROMETHEUS_PORT` и `DEMO_GRAFANA_PORT`. [Swagger UI](http://127.0.0.1:8000/docs) · [Prometheus](http://127.0.0.1:9090/targets) · [Grafana](http://127.0.0.1:3000).
 
-Интерфейсы доступны локально. [Swagger UI](http://127.0.0.1:8000/docs), [Prometheus](http://127.0.0.1:9090/targets), [Grafana](http://127.0.0.1:3000). Переменные `DEMO_API_PORT`, `DEMO_PROMETHEUS_PORT` и `DEMO_GRAFANA_PORT` задают порты на хосте.
+## Демо на собеседовании за 3–5 минут
 
-Контракты хранилищ, очереди, наблюдаемости и внешних API перечислены отдельно. [Инфраструктура](docs/infrastructure.md).
+Поднимите Compose заранее. Команды ниже используют порт backend по умолчанию.
+
+1. **Покажите готовность сервисов.** В ответе `GET /ready` виден статус каждой зависимости. Откройте Swagger UI, чтобы показать контракт API. [Swagger UI](http://127.0.0.1:8000/docs).
+
+   ```bash
+   curl -fsS http://127.0.0.1:8000/ready
+   ```
+
+2. **Проведите задание от API до базы.** Покажите `202 Accepted` и `task_id`. Найдите тот же ID в строке `Sync job completed` у воркера, затем запросите каталог. Расскажите, как воркер получает JSON по HTTP и делает upsert по SKU. При повторном импорте в каталоге остаются те же два товара.
+
+   ```bash
+   curl -sSi -X POST http://127.0.0.1:8000/sync/jobs
+   docker compose logs --tail 20 worker
+   curl -fsS http://127.0.0.1:8000/products
+   ```
+
+3. **Покажите сбой внешней интеграции.** Остановите поставщика и вызовите синхронный импорт. API вернёт `502`, а сохранённые товары останутся доступны. После показа запустите поставщика снова.
+
+   ```bash
+   docker compose stop supplier
+   curl -sSi -X POST http://127.0.0.1:8000/sync
+   curl -fsS http://127.0.0.1:8000/products
+   docker compose start supplier
+   ```
 
 ## Быстрый запуск с SQLite
 
